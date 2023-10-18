@@ -1,7 +1,5 @@
 package com.sc.certstore;
 
-import com.sc.certstore.util.CertificateExtractor;
-import com.sc.certstore.util.PrivateKeyConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -10,11 +8,15 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 import javax.annotation.PostConstruct;
+import java.io.ByteArrayInputStream;
+import java.io.FileOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.security.PrivateKey;
+import java.security.Key;
+import java.security.KeyStore;
 import java.security.cert.Certificate;
-import java.security.cert.X509Certificate;
+import java.security.cert.CertificateFactory;
+import java.util.Collection;
 
 @SpringBootApplication
 @EnableConfigurationProperties
@@ -50,31 +52,56 @@ public class MainApp {
     @PostConstruct
     public void init() {
         try {
-            String clientPem = new String(Files.readAllBytes(Paths.get(clientCertFilePath)));
-            String clientPrivateKeyPem = new String(Files.readAllBytes(Paths.get(clientPrivateKeyFilePath)));
+            // 1. Load the private key and certificate
+            String privateKeyContent = new String(Files.readAllBytes(Paths.get(clientPrivateKeyFilePath)));
+            String certificateContent = new String(Files.readAllBytes(Paths.get(clientCertFilePath)));
 
-            Certificate clientCert = CertificateConverter.convertPEMToCertificate(clientPem);
-            PrivateKey clientPrivateKey = PrivateKeyConverter.convertPEMToPrivateKey(clientPrivateKeyPem);
+            // Convert PEM format to Key and Certificate
+            Key privateKey = PrivateKeyConverter.fromPEM(privateKeyContent);
+            Certificate[] certChain = CertificateExtractor.fromPEM(certificateContent);
 
-            if (clientCert != null && clientPrivateKey != null) {
-                Certificate[] chain = {clientCert};
-
-                // Add your own certificate and private key to keystore
-                KeyStoreManager.addToKeyStore(keystorePath, keystorePassword.toCharArray(), "clientAlias", clientPrivateKey, keyPassword.toCharArray(), chain);
-
-                // Extract the chain from the client certificate and add to the truststore
-                Certificate[] extractedChain = CertificateExtractor.extractCertificateChain(clientPem);
-                for (Certificate cert : extractedChain) {
-                    if (cert != null) {
-                        TrustStoreManager.addToTrustStore(truststorePath, truststorePassword.toCharArray(), "alias" + ((X509Certificate) cert).getSerialNumber(), cert);
-                    } else {
-                        LOGGER.error("Certificate retuned from the CA chain is null");
-                    }
-                }
+            // 2. Store private key and certificate in the keystore
+            KeyStore keyStore = KeyStore.getInstance("JKS");
+            keyStore.load(null, keystorePassword.toCharArray());
+            keyStore.setKeyEntry("client", privateKey, keystorePassword.toCharArray(), certChain);
+            try (FileOutputStream fos = new FileOutputStream(keystorePath)) {
+                keyStore.store(fos, keystorePassword.toCharArray());
             }
-        } catch (Exception e) {
+
+            // 3. Extract certificate chain and store in the truststore
+            KeyStore trustStore = KeyStore.getInstance("JKS");
+            trustStore.load(null, truststorePassword.toCharArray());
+
+            // Assuming the first cert is the client's cert and the remaining certs are the chain
+            for (int i = 0; i < certChain.length; i++) {
+                trustStore.setCertificateEntry("alias" + i, certChain[i]);
+            }
+
+            try (FileOutputStream fos = new FileOutputStream(truststorePath)) {
+                trustStore.store(fos, truststorePassword.toCharArray());
+            }
+        }
+
+
+     catch (Exception e) {
             LOGGER.error("Error during certificate operations.", e);
         }
+    }
+
+}
+
+class PrivateKeyConverter {
+    public static Key fromPEM(String pemContent) {
+        // TODO: Implement conversion logic from PEM string to Key
+        return null;
+    }
+}
+
+class CertificateExtractor {
+    public static Certificate[] fromPEM(String pemContent) throws Exception {
+        CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+        Collection<? extends Certificate> certificates = certFactory.generateCertificates(new ByteArrayInputStream(pemContent.getBytes()));
+        return certificates.toArray(new Certificate[certificates.size()]);
     }
 }
 
